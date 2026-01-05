@@ -532,6 +532,11 @@ def run_multi_gpu(config_path: str, pair_index: int = None):
     # Run architectures in parallel using multiprocessing
     print(f"Starting {len(tasks)} tasks across {num_gpus} GPUs...\n")
     
+    # Set multiprocessing start method to 'spawn' for CUDA compatibility
+    # CUDA cannot be re-initialized in forked subprocesses
+    if mp.get_start_method(allow_none=True) != 'spawn':
+        mp.set_start_method('spawn', force=True)
+    
     # Prepare tasks with all required arguments
     # Each task is: (arch_idx, device_id, config_path, results_dir, selected_pairs)
     full_tasks = [
