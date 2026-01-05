@@ -30,7 +30,7 @@ loss:
   bandwidths: [0.5, 1.0, 2.0]
 
 training:
-  epochs: 1  # Temporarily set to 1 for testing
+  epochs: 50
   batch_size: 64
   learning_rate: 0.0001
 
