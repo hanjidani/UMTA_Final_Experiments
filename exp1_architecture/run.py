@@ -361,7 +361,7 @@ PARALLEL_PAIRS = [
 ]
 
 
-def run_single_architecture(config_path: str, arch_idx: int, device_id: int, results_dir: Path):
+def run_single_architecture(config_path: str, arch_idx: int, device_id: int, results_dir: Path, selected_pairs: list = None):
     """
     Run a single architecture on a specific GPU (for multi-GPU parallel execution).
     
@@ -370,6 +370,7 @@ def run_single_architecture(config_path: str, arch_idx: int, device_id: int, res
         arch_idx: Index of architecture to run
         device_id: GPU device ID (0, 1, ...)
         results_dir: Shared results directory
+        selected_pairs: Optional list of pairs to run. If None, uses pairs from config.
     """
     config = load_config(config_path)
     
@@ -384,6 +385,10 @@ def run_single_architecture(config_path: str, arch_idx: int, device_id: int, res
     # Create experiment instance on specific GPU
     exp = Experiment1(config_path, device_id=device_id)
     exp.results_dir = results_dir  # Use shared results directory
+    
+    # Override pairs if specified
+    if selected_pairs is not None:
+        exp.pairs = selected_pairs
     
     # Run only this architecture
     arch_results = []
@@ -456,22 +461,41 @@ def run_parallel_pair(config_path: str, pair_index: int):
     print(f"Results saved to: {exp.results_dir}")
 
 
-def run_multi_gpu(config_path: str):
+def run_multi_gpu(config_path: str, pair_index: int = None):
     """
     Run architectures in parallel across multiple GPUs.
     Splits architectures across available GPUs.
+    
+    Args:
+        config_path: Path to config.yaml
+        pair_index: Optional pair index (0-9) to run specific pair. If None, runs all pairs from config.
     """
     num_gpus = get_num_gpus()
     if num_gpus < 2:
         print(f"⚠️  Only {num_gpus} GPU(s) available. Falling back to single-GPU mode.")
-        Experiment1(config_path).run()
+        if pair_index is not None:
+            run_parallel_pair(config_path, pair_index)
+        else:
+            Experiment1(config_path).run()
         return
     
     config = load_config(config_path)
     num_architectures = len(config['architectures'])
     
-    print(f"\n{'='*60}")
-    print(f"MULTI-GPU PARALLEL EXECUTION")
+    # Handle specific pair selection
+    if pair_index is not None:
+        if pair_index < 0 or pair_index >= len(PARALLEL_PAIRS):
+            raise ValueError(f"Pair index {pair_index} out of range (0-{len(PARALLEL_PAIRS)-1})")
+        src_cls, tgt_cls = PARALLEL_PAIRS[pair_index]
+        selected_pairs = [(src_cls, tgt_cls)]
+        print(f"\n{'='*60}")
+        print(f"MULTI-GPU PARALLEL EXECUTION: Pair Index {pair_index}")
+        print(f"Source Class: {src_cls} -> Target Class: {tgt_cls}")
+    else:
+        selected_pairs = None  # Will use pairs from config
+        print(f"\n{'='*60}")
+        print(f"MULTI-GPU PARALLEL EXECUTION: All Pairs")
+    
     print(f"{'='*60}")
     print(f"GPUs Available: {num_gpus}")
     print(f"Architectures: {num_architectures}")
@@ -500,7 +524,7 @@ def run_multi_gpu(config_path: str):
     print(f"Starting {len(tasks)} tasks across {num_gpus} GPUs...\n")
     
     def run_task(arch_idx, gpu_id):
-        return run_single_architecture(config_path, arch_idx, gpu_id, results_dir)
+        return run_single_architecture(config_path, arch_idx, gpu_id, results_dir, selected_pairs)
     
     with mp.Pool(processes=num_gpus) as pool:
         results = pool.starmap(run_task, tasks)
@@ -558,12 +582,13 @@ def main():
     
     config_path = Path(__file__).parent / args.config
     
-    if args.pair_index is not None:
-        # Parallel execution mode (single pair across notebooks)
-        run_parallel_pair(str(config_path), args.pair_index)
-    elif args.multi_gpu:
+    if args.multi_gpu:
         # Multi-GPU parallel execution (architectures across GPUs)
-        run_multi_gpu(str(config_path))
+        # Can optionally specify pair_index to run specific pair
+        run_multi_gpu(str(config_path), pair_index=args.pair_index)
+    elif args.pair_index is not None:
+        # Parallel execution mode (single pair, single GPU)
+        run_parallel_pair(str(config_path), args.pair_index)
     else:
         # Normal execution mode (all pairs from config, single GPU)
         Experiment1(str(config_path)).run()
