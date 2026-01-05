@@ -5,7 +5,7 @@ experiment:
 data:
   dataset: "imagenet100"  # ImageNet-100 dataset
   num_classes: 50  # Use first 50 classes for pair selection (faster, can increase to 100)
-  train_samples_per_class: 500  # Use all available training samples per class
+  train_samples_per_class: null  # null = use all available training samples per class
   test_samples_per_class: 50  # Test samples per class
 
 attack:

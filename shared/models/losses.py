@@ -17,6 +17,9 @@ class MMDLoss(nn.Module):
     
     def rbf_kernel(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """Compute RBF kernel using torch.cdist for efficiency."""
+        # Ensure float32 (cdist doesn't support float16 on CUDA)
+        x = x.float()
+        y = y.float()
         distances = torch.cdist(x, y) ** 2  # [B_x, B_y]
         kernel_val = torch.zeros_like(distances)
         for sigma in self.bandwidths:
@@ -30,6 +33,9 @@ class MMDLoss(nn.Module):
             source: [B, D] adversarial embeddings
             target: [B, D] target class embeddings
         """
+        # Ensure float32 for cdist compatibility
+        source = source.float()
+        target = target.float()
         B = source.size(0)
         xx = self.rbf_kernel(source, source)
         yy = self.rbf_kernel(target, target)
@@ -44,6 +50,9 @@ class CosineLoss(nn.Module):
     """Negative cosine similarity to target centroid."""
     
     def forward(self, source: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        # Ensure float32 for numerical stability
+        source = source.float()
+        target = target.float()
         target_centroid = target.mean(dim=0, keepdim=True)
         # Return 1 - cosine_similarity for minimization (as per prompt specification)
         return 1 - F.cosine_similarity(source, target_centroid, dim=-1).mean()
@@ -69,6 +78,9 @@ class SinkhornLoss(nn.Module):
             source: [B, D] adversarial embeddings (normalized)
             target: [B, D] or [N, D] target class embeddings (normalized)
         """
+        # Ensure float32 for numerical stability
+        source = source.float()
+        target = target.float()
         # Cost matrix: 1 - Cosine Similarity (since embeddings are normalized)
         # source: [B, D], target: [N, D]
         cost = 1 - torch.matmul(source, target.t())  # [B, N]
