@@ -49,10 +49,17 @@ class Experiment1:
             p.requires_grad = False
         
         # Compile CLIP for faster inference on GPU (CUDA)
+        # Skip compilation on older GPUs (P100, etc.) that don't support Triton
         try:
             if hasattr(torch, 'compile') and self.device.type == 'cuda':
-                print("    Compiling CLIP model for faster inference...")
-                self.clip_model.encode_image = torch.compile(self.clip_model.encode_image, mode='reduce-overhead')
+                # Check CUDA capability (need >= 7.0 for Triton)
+                if torch.cuda.is_available():
+                    capability = torch.cuda.get_device_capability(0)
+                    if capability[0] >= 7:  # Compute capability >= 7.0
+                        print("    Compiling CLIP model for faster inference...")
+                        self.clip_model.encode_image = torch.compile(self.clip_model.encode_image, mode='reduce-overhead')
+                    else:
+                        print(f"    Skipping CLIP compilation (GPU capability {capability[0]}.{capability[1]} < 7.0)")
         except Exception as e:
             print(f"    Note: Could not compile CLIP ({e}), using standard inference")
         
