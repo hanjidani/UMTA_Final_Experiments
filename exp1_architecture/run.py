@@ -523,11 +523,19 @@ def run_multi_gpu(config_path: str, pair_index: int = None):
     # Run architectures in parallel using multiprocessing
     print(f"Starting {len(tasks)} tasks across {num_gpus} GPUs...\n")
     
-    def run_task(arch_idx, gpu_id):
-        return run_single_architecture(config_path, arch_idx, gpu_id, results_dir, selected_pairs)
-    
+    # Create a wrapper function that can be pickled (must be at module level)
+    # We'll pass config_path, results_dir, and selected_pairs as arguments
     with mp.Pool(processes=num_gpus) as pool:
-        results = pool.starmap(run_task, tasks)
+        # Use functools.partial to create picklable function
+        # Note: partial requires keyword arguments, so we need to adjust the function signature
+        run_task_func = partial(
+            _run_single_architecture_wrapper,
+            config_path=config_path,
+            results_dir=results_dir,
+            selected_pairs=selected_pairs
+        )
+        # Map (arch_idx, gpu_id) tuples to the function
+        results = pool.starmap(run_task_func, tasks)
     
     # Collect all results
     all_results = []
