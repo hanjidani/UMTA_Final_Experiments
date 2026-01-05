@@ -377,7 +377,11 @@ def _run_single_architecture_wrapper(args_tuple):
     Unpacks tuple arguments for starmap compatibility.
     """
     arch_idx, device_id, config_path, results_dir, selected_pairs = args_tuple
-    return run_single_architecture(config_path, arch_idx, device_id, results_dir, selected_pairs)
+    print(f"[WRAPPER GPU {device_id}] DEBUG: Received selected_pairs = {selected_pairs}")
+    # Convert Path to string for pickling safety
+    if isinstance(results_dir, Path):
+        results_dir = str(results_dir)
+    return run_single_architecture(config_path, arch_idx, device_id, Path(results_dir), selected_pairs)
 
 
 def run_single_architecture(config_path: str, arch_idx: int, device_id: int, results_dir: Path, selected_pairs: list = None):
