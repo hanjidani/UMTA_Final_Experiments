@@ -31,7 +31,7 @@ loss:
 
 training:
   epochs: 1  # Temporarily set to 1 for testing
-  batch_size: 128  # Optimized for GPU (T4: 15.8GB)
+  batch_size: 64
   learning_rate: 0.0001
 
 evaluation:
