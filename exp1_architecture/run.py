@@ -112,13 +112,16 @@ class Experiment1:
         """Train mapper for one pair."""
         cfg = self.config
         
+        # If using multiprocessing, disable DataLoader workers (daemonic processes can't spawn children)
+        num_workers_override = 0 if self.use_multiprocessing else None
+        
         src_loader = create_class_dataloader(
             self.train_data, source_class, cfg['training']['batch_size'],
-            cfg['data']['train_samples_per_class']
+            cfg['data']['train_samples_per_class'], num_workers=num_workers_override
         )
         tgt_loader = create_class_dataloader(
             self.train_data, target_class, cfg['training']['batch_size'],
-            cfg['data']['train_samples_per_class']
+            cfg['data']['train_samples_per_class'], num_workers=num_workers_override
         )
         
         # Pre-compute ALL target embeddings once (major speedup!)
