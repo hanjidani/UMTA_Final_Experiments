@@ -9,6 +9,7 @@ import json
 import time
 import os
 import tempfile
+import gc
 from datetime import datetime
 import argparse
 import multiprocessing as mp
@@ -404,7 +405,10 @@ def run_single_architecture(config_path: str, arch_idx: int, device_id: int, res
     original_batch_size = config['training']['batch_size']
     
     # Architecture-specific batch size reduction
-    if arch_name in ['UNet', 'ResUNet', 'AttentionUNet']:
+    if arch_name == 'ResUNet':
+        # ResUNet is memory-intensive due to residual blocks: use 32
+        config['training']['batch_size'] = 32
+    elif arch_name in ['UNet', 'AttentionUNet']:
         # Large architectures: reduce to 64
         config['training']['batch_size'] = 64
     else:
@@ -604,8 +608,16 @@ def run_multi_gpu(config_path: str, pair_index: int = None):
             if arch_results:
                 all_results.extend(arch_results)
         
+        # Explicitly close and join the pool to ensure processes are terminated
+        pool.close()
+        pool.join()
+        
         # Clear memory between rounds
+        gc.collect()
         torch.cuda.empty_cache()
+        
+        # Small delay to allow processes to fully terminate and memory to be freed
+        time.sleep(1)
     
     # Results already collected in rounds above
     
