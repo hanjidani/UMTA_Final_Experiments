@@ -94,9 +94,11 @@ class Experiment1:
         # Select pairs (or use pre-selected pairs)
         if pre_selected_pairs is not None:
             self.pairs = pre_selected_pairs
-            print(f"Using pre-selected pairs: {len(self.pairs)} pair(s)")
+            print(f"✅ Using pre-selected pairs: {len(self.pairs)} pair(s)")
+            for idx, (src, tgt) in enumerate(self.pairs):
+                print(f"   Pair {idx+1}: Class {src} → Class {tgt}")
         else:
-            print("Selecting pairs...")
+            print("Selecting pairs from config...")
             self.pairs = select_diverse_pairs(
                 self.clip_model, self.train_data,
                 self.config['evaluation']['num_pairs'],
