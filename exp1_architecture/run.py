@@ -361,10 +361,12 @@ PARALLEL_PAIRS = [
 ]
 
 
-def _run_single_architecture_wrapper(arch_idx: int, device_id: int, config_path: str, results_dir: Path, selected_pairs: list = None):
+def _run_single_architecture_wrapper(args_tuple):
     """
     Wrapper function for multiprocessing (must be at module level for pickling).
+    Unpacks tuple arguments for starmap compatibility.
     """
+    arch_idx, device_id, config_path, results_dir, selected_pairs = args_tuple
     return run_single_architecture(config_path, arch_idx, device_id, results_dir, selected_pairs)
 
 
@@ -530,19 +532,16 @@ def run_multi_gpu(config_path: str, pair_index: int = None):
     # Run architectures in parallel using multiprocessing
     print(f"Starting {len(tasks)} tasks across {num_gpus} GPUs...\n")
     
-    # Create a wrapper function that can be pickled (must be at module level)
-    # We'll pass config_path, results_dir, and selected_pairs as arguments
+    # Prepare tasks with all required arguments
+    # Each task is: (arch_idx, device_id, config_path, results_dir, selected_pairs)
+    full_tasks = [
+        (arch_idx, gpu_id, config_path, results_dir, selected_pairs)
+        for arch_idx, gpu_id in tasks
+    ]
+    
     with mp.Pool(processes=num_gpus) as pool:
-        # Use functools.partial to create picklable function
-        # Note: partial requires keyword arguments, so we need to adjust the function signature
-        run_task_func = partial(
-            _run_single_architecture_wrapper,
-            config_path=config_path,
-            results_dir=results_dir,
-            selected_pairs=selected_pairs
-        )
-        # Map (arch_idx, gpu_id) tuples to the function
-        results = pool.starmap(run_task_func, tasks)
+        # Use map instead of starmap since wrapper unpacks the tuple
+        results = pool.map(_run_single_architecture_wrapper, full_tasks)
     
     # Collect all results
     all_results = []
