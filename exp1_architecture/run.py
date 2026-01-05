@@ -63,12 +63,9 @@ class Experiment1:
                 if torch.cuda.is_available():
                     capability = torch.cuda.get_device_capability(self.device_id)
                     if capability[0] >= 7:  # Compute capability >= 7.0
-                        print("    Compiling CLIP model for faster inference...")
                         self.clip_model.encode_image = torch.compile(self.clip_model.encode_image, mode='reduce-overhead')
-                    else:
-                        print(f"    Skipping CLIP compilation (GPU capability {capability[0]}.{capability[1]} < 7.0)")
-        except Exception as e:
-            print(f"    Note: Could not compile CLIP ({e}), using standard inference")
+        except Exception:
+            pass  # Use standard inference if compilation fails
         
         # Load data based on config
         dataset_name = self.config['data']['dataset'].lower()
@@ -77,7 +74,6 @@ class Experiment1:
         # Check if config has explicit path (for Kaggle unified dataset)
         if 'path' in self.config.get('data', {}):
             data_dir = self.config['data']['path']
-            print(f"Using dataset path from config: {data_dir}")
         else:
             data_dir = str(PROJECT_ROOT / 'data')
         
@@ -310,7 +306,6 @@ class Experiment1:
                 })
             
             self._save_intermediate()
-            print(f"\n  💾 Intermediate results saved")
         
         overall_pbar.close()
         self._save_final()
