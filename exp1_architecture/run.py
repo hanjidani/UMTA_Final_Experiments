@@ -32,9 +32,10 @@ from shared.evaluation import compute_attack_metrics, compute_target_centroid
 
 
 class Experiment1:
-    def __init__(self, config_path: str, device_id: int = 0):
+    def __init__(self, config_path: str, device_id: int = 0, pre_selected_pairs: list = None, use_multiprocessing: bool = False):
         self.config = load_config(config_path)
         self.device_id = device_id
+        self.use_multiprocessing = use_multiprocessing  # Flag to disable DataLoader workers
         self.device = get_device(device_id)
         set_seed(self.config['experiment']['seed'])
         
@@ -90,14 +91,18 @@ class Experiment1:
         print(f"Loaded {len(self.train_data)} training samples, {len(self.test_data)} test samples")
         print(f"Number of classes: {len(self.class_names)}")
         
-        # Select pairs
-        print("Selecting pairs...")
-        self.pairs = select_diverse_pairs(
-            self.clip_model, self.train_data,
-            self.config['evaluation']['num_pairs'],
-            self.config['data']['num_classes'],
-            self.device
-        )
+        # Select pairs (or use pre-selected pairs)
+        if pre_selected_pairs is not None:
+            self.pairs = pre_selected_pairs
+            print(f"Using pre-selected pairs: {len(self.pairs)} pair(s)")
+        else:
+            print("Selecting pairs...")
+            self.pairs = select_diverse_pairs(
+                self.clip_model, self.train_data,
+                self.config['evaluation']['num_pairs'],
+                self.config['data']['num_classes'],
+                self.device
+            )
         
         self.results = []
     
@@ -202,13 +207,16 @@ class Experiment1:
         """Evaluate trained mapper."""
         cfg = self.config
         
+        # If using multiprocessing, disable DataLoader workers
+        num_workers_override = 0 if self.use_multiprocessing else None
+        
         src_loader = create_class_dataloader(
             self.test_data, source_class, cfg['training']['batch_size'],
-            cfg['data']['test_samples_per_class'], shuffle=False
+            cfg['data']['test_samples_per_class'], shuffle=False, num_workers=num_workers_override
         )
         tgt_loader = create_class_dataloader(
             self.test_data, target_class, cfg['training']['batch_size'],
-            cfg['data']['test_samples_per_class'], shuffle=False
+            cfg['data']['test_samples_per_class'], shuffle=False, num_workers=num_workers_override
         )
         
         # Compute target centroid with progress
@@ -392,12 +400,14 @@ def run_single_architecture(config_path: str, arch_idx: int, device_id: int, res
     print(f"\n[GPU {device_id}] Starting architecture: {arch_name}")
     
     # Create experiment instance on specific GPU
-    exp = Experiment1(config_path, device_id=device_id)
+    # Pass pre_selected_pairs to avoid pair selection, and use_multiprocessing=True to disable DataLoader workers
+    exp = Experiment1(
+        config_path, 
+        device_id=device_id, 
+        pre_selected_pairs=selected_pairs,
+        use_multiprocessing=True  # Disable DataLoader workers in multiprocessing context
+    )
     exp.results_dir = results_dir  # Use shared results directory
-    
-    # Override pairs if specified
-    if selected_pairs is not None:
-        exp.pairs = selected_pairs
     
     # Run only this architecture
     arch_results = []

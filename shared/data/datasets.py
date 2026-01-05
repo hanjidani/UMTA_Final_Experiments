@@ -185,26 +185,31 @@ def get_class_loader(dataset, class_index: int, batch_size: int, max_samples: Op
 
 def create_class_dataloader(
     dataset, class_id: int, batch_size: int, 
-    max_samples: Optional[int] = None, shuffle: bool = True
+    max_samples: Optional[int] = None, shuffle: bool = True, num_workers: Optional[int] = None
 ) -> DataLoader:
     """Create DataLoader for a specific class."""
     indices = get_class_indices(dataset, class_id)
     if max_samples and len(indices) > max_samples:
         indices = np.random.choice(indices, max_samples, replace=False).tolist()
-    # Optimize num_workers based on platform
-    import platform
-    import torch
-    
-    # Optimize for GPU (CUDA) - Kaggle/Cloud ready
-    if torch.cuda.is_available():
-        num_workers = 4  # Multiple workers for GPU
-        pin_memory = True  # Faster GPU data transfer
-    elif platform.system() == "Darwin":  # macOS (MPS)
-        num_workers = 2  # Conservative for macOS
-        pin_memory = False  # MPS doesn't support pin_memory
-    else:  # CPU fallback
-        num_workers = 2
-        pin_memory = False
+    # Optimize num_workers based on platform (unless explicitly overridden)
+    if num_workers is None:
+        import platform
+        import torch
+        
+        # Optimize for GPU (CUDA) - Kaggle/Cloud ready
+        if torch.cuda.is_available():
+            num_workers = 4  # Multiple workers for GPU
+            pin_memory = True  # Faster GPU data transfer
+        elif platform.system() == "Darwin":  # macOS (MPS)
+            num_workers = 2  # Conservative for macOS
+            pin_memory = False  # MPS doesn't support pin_memory
+        else:  # CPU fallback
+            num_workers = 2
+            pin_memory = False
+    else:
+        # Use provided num_workers, set pin_memory based on CUDA availability
+        import torch
+        pin_memory = torch.cuda.is_available() and num_workers > 0
     
     return DataLoader(
         Subset(dataset, indices), 
