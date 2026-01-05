@@ -97,11 +97,7 @@ class Experiment1:
         # Select pairs (or use pre-selected pairs)
         if pre_selected_pairs is not None:
             self.pairs = pre_selected_pairs
-            print(f"✅ Using pre-selected pairs: {len(self.pairs)} pair(s)")
-            for idx, (src, tgt) in enumerate(self.pairs):
-                print(f"   Pair {idx+1}: Class {src} → Class {tgt}")
         else:
-            print("Selecting pairs from config...")
             self.pairs = select_diverse_pairs(
                 self.clip_model, self.train_data,
                 self.config['evaluation']['num_pairs'],
@@ -129,7 +125,6 @@ class Experiment1:
         
         # Pre-compute ALL target embeddings once (major speedup!)
         # Store as list of batches to match loader structure
-        print("    Pre-computing target embeddings...")
         tgt_embeddings_list = []
         with torch.no_grad():
             for tgt_imgs, _ in tqdm(tgt_loader, desc="      Target embeddings", leave=False, ncols=100):
@@ -227,8 +222,7 @@ class Experiment1:
             cfg['data']['test_samples_per_class'], shuffle=False, num_workers=num_workers_override
         )
         
-        # Compute target centroid with progress
-        print("    Computing target centroid...")
+        # Compute target centroid
         target_centroid = compute_target_centroid(self.clip_model, tgt_loader, self.device)
         epsilon = cfg['attack']['epsilon']
         
@@ -383,7 +377,6 @@ def _run_single_architecture_wrapper(args_tuple):
     Unpacks tuple arguments for starmap compatibility.
     """
     arch_idx, device_id, config_path, results_dir, selected_pairs = args_tuple
-    print(f"[WRAPPER GPU {device_id}] DEBUG: Received selected_pairs = {selected_pairs}")
     # Convert Path to string for pickling safety
     if isinstance(results_dir, Path):
         results_dir = str(results_dir)
@@ -618,7 +611,6 @@ def run_multi_gpu(config_path: str, pair_index: int = None):
         
         # Clear memory between rounds
         torch.cuda.empty_cache()
-        print(f"\n✅ Round {round_idx + 1} completed. Memory cleared.\n")
     
     # Results already collected in rounds above
     
