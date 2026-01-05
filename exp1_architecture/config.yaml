@@ -1,0 +1,39 @@
+experiment:
+  name: "exp1_architecture_search"
+  seed: 42
+
+data:
+  dataset: "cifar100"
+  num_classes: 20
+  train_samples_per_class: 100
+  test_samples_per_class: 20
+
+attack:
+  epsilon: 0.0314  # 8/255
+
+model:
+  clip_model: "ViT-B/32"
+
+architectures:
+  - name: "SimpleCNN"
+    base_channels: 32
+  - name: "UNet"
+    base_channels: 32
+  - name: "ResUNet"
+    base_channels: 32
+    num_blocks: 2
+  - name: "AttentionUNet"
+    base_channels: 32
+
+loss:
+  type: "mmd"
+  bandwidths: [0.5, 1.0, 2.0]
+
+training:
+  epochs: 15
+  batch_size: 64  # Increased for better MPS utilization and faster training
+  learning_rate: 0.0001
+
+evaluation:
+  num_pairs: 3
+

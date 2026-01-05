@@ -1,0 +1,325 @@
+"""
+Experiment 1: Architecture Search
+Compares SimpleCNN, UNet, ResUNet, AttentionUNet
+"""
+
+import sys
+from pathlib import Path
+import json
+import time
+from datetime import datetime
+import argparse
+
+import torch
+import clip
+import pandas as pd
+from tqdm import tqdm
+
+# Add project root to path
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from shared.utils import get_device, set_seed, clear_memory, count_parameters, ensure_dir, load_config, save_config
+from shared.models import create_mapper, create_loss
+from shared.data import load_cifar100, create_class_dataloader, select_diverse_pairs, get_cifar100_class_names
+from shared.evaluation import compute_attack_metrics, compute_target_centroid
+
+
+class Experiment1:
+    def __init__(self, config_path: str):
+        self.config = load_config(config_path)
+        self.device = get_device()
+        set_seed(self.config['experiment']['seed'])
+        
+        # Results directory
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.results_dir = Path(__file__).parent / 'results' / timestamp
+        ensure_dir(self.results_dir)
+        save_config(self.config, str(self.results_dir / 'config.json'))
+        
+        # Load CLIP
+        print("Loading CLIP...")
+        self.clip_model, self.preprocess = clip.load(self.config['model']['clip_model'], device=self.device)
+        self.clip_model.eval()
+        for p in self.clip_model.parameters():
+            p.requires_grad = False
+        
+        # Compile CLIP for faster inference (if supported)
+        # Note: torch.compile may not work on MPS, but worth trying
+        try:
+            if hasattr(torch, 'compile') and self.device.type != 'mps':
+                print("    Compiling CLIP model for faster inference...")
+                self.clip_model.encode_image = torch.compile(self.clip_model.encode_image, mode='reduce-overhead')
+        except Exception as e:
+            print(f"    Note: Could not compile CLIP ({e}), using standard inference")
+        
+        # Load data
+        print("Loading dataset...")
+        self.train_data, self.test_data = load_cifar100(self.preprocess, str(PROJECT_ROOT / 'data'))
+        
+        # Select pairs
+        print("Selecting pairs...")
+        self.pairs = select_diverse_pairs(
+            self.clip_model, self.train_data,
+            self.config['evaluation']['num_pairs'],
+            self.config['data']['num_classes'],
+            self.device
+        )
+        
+        self.class_names = get_cifar100_class_names()
+        self.results = []
+    
+    def train_mapper(self, mapper, source_class, target_class):
+        """Train mapper for one pair."""
+        cfg = self.config
+        
+        src_loader = create_class_dataloader(
+            self.train_data, source_class, cfg['training']['batch_size'],
+            cfg['data']['train_samples_per_class']
+        )
+        tgt_loader = create_class_dataloader(
+            self.train_data, target_class, cfg['training']['batch_size'],
+            cfg['data']['train_samples_per_class']
+        )
+        
+        # Pre-compute ALL target embeddings once (major speedup!)
+        # Store as list of batches to match loader structure
+        print("    Pre-computing target embeddings...")
+        tgt_embeddings_list = []
+        with torch.no_grad():
+            for tgt_imgs, _ in tqdm(tgt_loader, desc="      Target embeddings", leave=False, ncols=100):
+                tgt_imgs = tgt_imgs.to(self.device)
+                tgt_emb = self.clip_model.encode_image(tgt_imgs)
+                tgt_emb = tgt_emb / tgt_emb.norm(dim=-1, keepdim=True)
+                # Detach to ensure no gradient computation
+                tgt_embeddings_list.append(tgt_emb.detach())
+        
+        loss_fn = create_loss(cfg['loss']['type'], bandwidths=cfg['loss']['bandwidths'])
+        optimizer = torch.optim.Adam(mapper.parameters(), lr=cfg['training']['learning_rate'])
+        epsilon = cfg['attack']['epsilon']
+        
+        losses = []
+        mapper.train()
+        
+        # Progress bar for epochs
+        epoch_pbar = tqdm(range(cfg['training']['epochs']), 
+                         desc="    Training", 
+                         leave=True,
+                         ncols=100)
+        
+        for epoch in epoch_pbar:
+            epoch_loss = 0
+            n_batches = 0
+            tgt_emb_iter = iter(tgt_embeddings_list)  # Cycle through pre-computed embeddings
+            
+            # Progress bar for batches
+            batch_pbar = tqdm(src_loader, 
+                             desc=f"      Epoch {epoch+1}", 
+                             leave=False,
+                             ncols=100)
+            
+            for src_imgs, _ in batch_pbar:
+                src_imgs = src_imgs.to(self.device)
+                
+                # Get pre-computed target embeddings (no CLIP encoding needed!)
+                try:
+                    tgt_emb = next(tgt_emb_iter)
+                except StopIteration:
+                    tgt_emb_iter = iter(tgt_embeddings_list)
+                    tgt_emb = next(tgt_emb_iter)
+                
+                # Generate adversarial
+                pert = epsilon * torch.tanh(mapper(src_imgs))
+                adv_imgs = torch.clamp(src_imgs + pert, 0, 1)
+                
+                # Compute adversarial embeddings through CLIP
+                # Since CLIP has requires_grad=False, gradients won't flow through it
+                # But we still need gradients through adv_imgs -> mapper
+                # The key: adv_imgs has requires_grad=True (from mapper), so gradients will flow
+                adv_emb = self.clip_model.encode_image(adv_imgs)
+                adv_emb = adv_emb / adv_emb.norm(dim=-1, keepdim=True)
+                
+                # Keep on device (MPS) - no need for .float() conversion
+                loss = loss_fn(adv_emb, tgt_emb)
+                
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                
+                # Reduce synchronization: only call .item() once per batch
+                loss_val = loss.item()
+                epoch_loss += loss_val
+                n_batches += 1
+                
+                # Update batch progress bar with current loss (less frequent updates)
+                if n_batches % 1 == 0:  # Update every batch
+                    batch_pbar.set_postfix({'loss': f'{loss_val:.4f}'})
+            
+            avg_loss = epoch_loss / max(n_batches, 1)
+            losses.append(avg_loss)
+            
+            # Update epoch progress bar with average loss
+            epoch_pbar.set_postfix({'avg_loss': f'{avg_loss:.4f}', 
+                                   'best': f'{min(losses):.4f}'})
+        
+        return losses
+    
+    def evaluate_mapper(self, mapper, source_class, target_class):
+        """Evaluate trained mapper."""
+        cfg = self.config
+        
+        src_loader = create_class_dataloader(
+            self.test_data, source_class, cfg['training']['batch_size'],
+            cfg['data']['test_samples_per_class'], shuffle=False
+        )
+        tgt_loader = create_class_dataloader(
+            self.test_data, target_class, cfg['training']['batch_size'],
+            cfg['data']['test_samples_per_class'], shuffle=False
+        )
+        
+        # Compute target centroid with progress
+        print("    Computing target centroid...")
+        target_centroid = compute_target_centroid(self.clip_model, tgt_loader, self.device)
+        epsilon = cfg['attack']['epsilon']
+        
+        all_clean, all_adv, all_emb = [], [], []
+        mapper.eval()
+        
+        # Progress bar for evaluation
+        eval_pbar = tqdm(src_loader, desc="    Evaluating", leave=False, ncols=100)
+        
+        with torch.no_grad():
+            for src_imgs, _ in eval_pbar:
+                src_imgs = src_imgs.to(self.device)
+                pert = epsilon * torch.tanh(mapper(src_imgs))
+                adv_imgs = torch.clamp(src_imgs + pert, 0, 1)
+                
+                adv_emb = self.clip_model.encode_image(adv_imgs)
+                adv_emb = adv_emb / adv_emb.norm(dim=-1, keepdim=True)
+                
+                all_clean.append(src_imgs.cpu())
+                all_adv.append(adv_imgs.cpu())
+                all_emb.append(adv_emb.cpu())
+        
+        return compute_attack_metrics(
+            torch.cat(all_clean), torch.cat(all_adv),
+            torch.cat(all_emb), target_centroid.cpu()
+        )
+    
+    def run(self):
+        print("\n" + "="*60)
+        print("EXPERIMENT 1: ARCHITECTURE SEARCH")
+        print("="*60)
+        print(f"Total: {len(self.config['architectures'])} architectures × {len(self.pairs)} pairs = {len(self.config['architectures']) * len(self.pairs)} runs")
+        print("="*60 + "\n")
+        
+        # Overall progress bar
+        total_runs = len(self.config['architectures']) * len(self.pairs)
+        overall_pbar = tqdm(total=total_runs, desc="Overall Progress", ncols=120, position=0)
+        
+        for arch_idx, arch_cfg in enumerate(self.config['architectures']):
+            arch_name = arch_cfg['name']
+            print(f"\n{'='*60}")
+            print(f"Architecture {arch_idx+1}/{len(self.config['architectures'])}: {arch_name}")
+            print(f"{'='*60}")
+            
+            for pair_idx, (src_cls, tgt_cls) in enumerate(self.pairs):
+                print(f"\n  Pair {pair_idx+1}/{len(self.pairs)}: "
+                      f"{self.class_names[src_cls]} → {self.class_names[tgt_cls]}")
+                
+                # Create mapper
+                mapper = create_mapper(arch_name, **arch_cfg).to(self.device)
+                n_params = count_parameters(mapper)
+                print(f"    Parameters: {n_params:,}")
+                
+                # Train
+                start = time.time()
+                losses = self.train_mapper(mapper, src_cls, tgt_cls)
+                train_time = time.time() - start
+                
+                # Evaluate
+                metrics = self.evaluate_mapper(mapper, src_cls, tgt_cls)
+                print(f"    ✅ Results: ASR@0.5={metrics.asr_05:.2%}, ASR@0.6={metrics.asr_06:.2%}, "
+                      f"Cos-Sim={metrics.cos_sim_mean:.3f}, Time={train_time:.1f}s")
+                
+                self.results.append({
+                    'architecture': arch_name,
+                    'pair_idx': pair_idx,
+                    'source_class': src_cls,
+                    'target_class': tgt_cls,
+                    'source_name': self.class_names[src_cls],
+                    'target_name': self.class_names[tgt_cls],
+                    'num_params': n_params,
+                    'train_time': train_time,
+                    'final_loss': losses[-1],
+                    **metrics.to_dict()
+                })
+                
+                del mapper
+                clear_memory(self.device)
+                
+                # Update overall progress
+                overall_pbar.update(1)
+                overall_pbar.set_postfix({
+                    'arch': arch_name[:10],
+                    'ASR': f'{metrics.asr_05:.1%}'
+                })
+            
+            self._save_intermediate()
+            print(f"\n  💾 Intermediate results saved")
+        
+        overall_pbar.close()
+        self._save_final()
+    
+    def _save_intermediate(self):
+        pd.DataFrame(self.results).to_csv(self.results_dir / 'results.csv', index=False)
+    
+    def _save_final(self):
+        df = pd.DataFrame(self.results)
+        df.to_csv(self.results_dir / 'results.csv', index=False)
+        
+        # Summary
+        summary = df.groupby('architecture').agg({
+            'asr_05': ['mean', 'std'],
+            'asr_06': ['mean', 'std'],
+            'cos_sim_mean': ['mean', 'std'],
+            'train_time': 'mean',
+            'num_params': 'first'
+        }).round(4)
+        
+        print("\n" + "="*60)
+        print("SUMMARY")
+        print("="*60)
+        print(summary)
+        
+        mean_asr = df.groupby('architecture')['asr_05'].mean()
+        best_arch = mean_asr.idxmax()
+        best_config = next(a for a in self.config['architectures'] if a['name'] == best_arch)
+        
+        print(f"\n🏆 BEST: {best_arch} (ASR@0.5: {mean_asr[best_arch]:.2%})")
+        
+        # Save best architecture for next experiments
+        with open(self.results_dir / 'best_architecture.json', 'w') as f:
+            json.dump({
+                'best_architecture': best_arch,
+                'config': best_config,
+                'asr_05': float(mean_asr[best_arch]),
+                'all_results': mean_asr.to_dict()
+            }, f, indent=2)
+        
+        summary.to_csv(self.results_dir / 'summary.csv')
+        print(f"\nResults saved to: {self.results_dir}")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', default='config.yaml')
+    args = parser.parse_args()
+    
+    config_path = Path(__file__).parent / args.config
+    Experiment1(str(config_path)).run()
+
+
+if __name__ == '__main__':
+    main()
+

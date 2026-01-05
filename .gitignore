@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+venv/
+env/
+
+# Data
+data/cifar-100-python/
+data/imagenet-100/
+*.tar.gz
+*.zip
+
+# Results
+exp*/results/*/
+!exp*/results/.gitkeep
+
+# Logs
+exp*/logs/
+!exp*/logs/.gitkeep
+logs/
+
+# Models
+*.pth
+*.pt
+*.ckpt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Logs
+*.log
+wandb/
+
+# Temporary
+*.tmp
+*.bak
+
