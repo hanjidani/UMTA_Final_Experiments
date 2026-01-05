@@ -82,13 +82,14 @@ def load_imagenet100(clip_preprocess, data_dir: str = './data') -> Tuple[Dataset
     import os
     from torchvision.datasets import ImageFolder
     
+    # Prioritize the passed data_dir (for Kaggle unified dataset)
     # Try multiple possible paths (for Kaggle compatibility)
     possible_roots = [
-        Path(data_dir) / 'imagenet-100',
-        Path(data_dir) / 'ImageNet100',
-        Path(data_dir),
-        Path('/kaggle/input/imagenet-100') / 'imagenet-100',
-        Path('/kaggle/input/imagenet-100'),
+        Path(data_dir),  # First: Check the exact path passed (unified dataset)
+        Path(data_dir) / 'imagenet-100',  # Second: Check subdirectory
+        Path(data_dir) / 'ImageNet100',  # Third: Alternative naming
+        Path('/kaggle/input/imagenet-100') / 'imagenet-100',  # Fallback: Kaggle input
+        Path('/kaggle/input/imagenet-100'),  # Fallback: Kaggle input root
     ]
     
     real_root = None
@@ -99,10 +100,15 @@ def load_imagenet100(clip_preprocess, data_dir: str = './data') -> Tuple[Dataset
             break
     
     if real_root is None:
-        # Fallback to original behavior
-        real_root = Path(data_dir) / 'imagenet-100'
+        # Final fallback: assume data_dir is the root with train/val subdirectories
+        real_root = Path(data_dir)
         train_dir = real_root / 'train'
         val_dir = real_root / 'val'
+        if not train_dir.exists():
+            # Last resort: try imagenet-100 subdirectory
+            real_root = Path(data_dir) / 'imagenet-100'
+            train_dir = real_root / 'train'
+            val_dir = real_root / 'val'
     else:
         train_dir = real_root / 'train'
         val_dir = real_root / 'val'
