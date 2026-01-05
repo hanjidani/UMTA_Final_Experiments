@@ -60,7 +60,12 @@ class Experiment1:
         dataset_name = self.config['data']['dataset'].lower()
         print(f"Loading dataset: {dataset_name}...")
         
-        data_dir = str(PROJECT_ROOT / 'data')
+        # Check if config has explicit path (for Kaggle unified dataset)
+        if 'path' in self.config.get('data', {}):
+            data_dir = self.config['data']['path']
+            print(f"Using dataset path from config: {data_dir}")
+        else:
+            data_dir = str(PROJECT_ROOT / 'data')
         
         if dataset_name == 'imagenet100':
             self.train_data, self.test_data = load_imagenet100(self.preprocess, data_dir)
