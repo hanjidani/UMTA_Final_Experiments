@@ -411,11 +411,8 @@ def run_single_architecture(config_path: str, arch_idx: int, device_id: int, res
     
     print(f"\n[GPU {device_id}] Starting architecture: {arch_name}")
     
-    # Reduce batch size for multi-GPU mode (multiple processes per GPU share memory)
-    # Original batch_size is for single-GPU mode, halve it for multi-GPU
-    original_batch_size = config['training']['batch_size']
-    config['training']['batch_size'] = max(32, original_batch_size // 2)  # At least 32, but half of original
-    print(f"[GPU {device_id}] Using batch_size={config['training']['batch_size']} (reduced from {original_batch_size} for multi-GPU)")
+    # Keep original batch size since we're running only 1 architecture per GPU now
+    # (No need to reduce batch size anymore)
     
     # Temporarily save modified config for Experiment1 to load
     temp_config_path = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
@@ -553,7 +550,8 @@ def run_multi_gpu(config_path: str, pair_index: int = None):
     print(f"{'='*60}")
     print(f"GPUs Available: {num_gpus}")
     print(f"Architectures: {num_architectures}")
-    print(f"Distribution: {[f'GPU {i}: {num_architectures // num_gpus + (1 if i < num_architectures % num_gpus else 0)} archs' for i in range(num_gpus)]}")
+    num_rounds = (num_architectures + num_gpus - 1) // num_gpus
+    print(f"Execution Strategy: {num_rounds} round(s), 1 architecture per GPU per round")
     print(f"{'='*60}\n")
     
     # Create shared results directory
@@ -562,42 +560,55 @@ def run_multi_gpu(config_path: str, pair_index: int = None):
     ensure_dir(results_dir)
     save_config(config, str(results_dir / 'config.json'))
     
-    # Split architectures across GPUs
-    arch_per_gpu = num_architectures // num_gpus
-    remainder = num_architectures % num_gpus
-    
+    # Distribute architectures: 1 architecture per GPU at a time (to avoid OOM)
+    # If there are more architectures than GPUs, run them in rounds
     tasks = []
-    arch_idx = 0
-    for gpu_id in range(num_gpus):
-        num_archs_for_gpu = arch_per_gpu + (1 if gpu_id < remainder else 0)
-        for _ in range(num_archs_for_gpu):
-            tasks.append((arch_idx, gpu_id))
-            arch_idx += 1
+    for arch_idx in range(num_architectures):
+        gpu_id = arch_idx % num_gpus  # Round-robin assignment
+        tasks.append((arch_idx, gpu_id))
     
-    # Run architectures in parallel using multiprocessing
-    print(f"Starting {len(tasks)} tasks across {num_gpus} GPUs...\n")
+    # Run architectures in rounds: only num_gpus architectures at a time
+    print(f"Running {num_architectures} architectures across {num_gpus} GPUs in rounds...\n")
     
     # Set multiprocessing start method to 'spawn' for CUDA compatibility
     # CUDA cannot be re-initialized in forked subprocesses
     if mp.get_start_method(allow_none=True) != 'spawn':
         mp.set_start_method('spawn', force=True)
     
-    # Prepare tasks with all required arguments
-    # Each task is: (arch_idx, device_id, config_path, results_dir, selected_pairs)
-    full_tasks = [
-        (arch_idx, gpu_id, config_path, results_dir, selected_pairs)
-        for arch_idx, gpu_id in tasks
-    ]
-    
-    with mp.Pool(processes=num_gpus) as pool:
-        # Use map instead of starmap since wrapper unpacks the tuple
-        results = pool.map(_run_single_architecture_wrapper, full_tasks)
-    
-    # Collect all results
+    # Process architectures in rounds to avoid OOM
     all_results = []
-    for arch_results in results:
-        if arch_results:
-            all_results.extend(arch_results)
+    num_rounds = (num_architectures + num_gpus - 1) // num_gpus  # Ceiling division
+    
+    for round_idx in range(num_rounds):
+        round_start = round_idx * num_gpus
+        round_end = min(round_start + num_gpus, num_architectures)
+        round_tasks = tasks[round_start:round_end]
+        
+        print(f"\n{'='*60}")
+        print(f"ROUND {round_idx + 1}/{num_rounds}: Running architectures {round_start} to {round_end - 1}")
+        print(f"{'='*60}\n")
+        
+        # Prepare tasks with all required arguments
+        # Each task is: (arch_idx, device_id, config_path, results_dir, selected_pairs)
+        full_tasks = [
+            (arch_idx, gpu_id, config_path, results_dir, selected_pairs)
+            for arch_idx, gpu_id in round_tasks
+        ]
+        
+        with mp.Pool(processes=len(round_tasks)) as pool:
+            # Use map instead of starmap since wrapper unpacks the tuple
+            round_results = pool.map(_run_single_architecture_wrapper, full_tasks)
+        
+        # Collect results from this round
+        for arch_results in round_results:
+            if arch_results:
+                all_results.extend(arch_results)
+        
+        # Clear memory between rounds
+        torch.cuda.empty_cache()
+        print(f"\n✅ Round {round_idx + 1} completed. Memory cleared.\n")
+    
+    # Results already collected in rounds above
     
     # Save combined results
     df = pd.DataFrame(all_results)
