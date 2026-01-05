@@ -9,16 +9,21 @@ import os
 import gc
 
 
-def get_device():
+def get_device(device_id: int = 0):
     """
     Get the best available device.
     Priority: CUDA > MPS > CPU
     Optimized for GPU (Kaggle/Cloud).
+    
+    Args:
+        device_id: GPU device ID (0, 1, 2, ...) for multi-GPU setups
     """
     if torch.cuda.is_available():
-        device = torch.device("cuda")
-        print(f"Using CUDA: {torch.cuda.get_device_name(0)}")
-        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+        if device_id >= torch.cuda.device_count():
+            device_id = 0  # Fallback to GPU 0
+        device = torch.device(f"cuda:{device_id}")
+        print(f"Using CUDA:{device_id}: {torch.cuda.get_device_name(device_id)}")
+        print(f"GPU Memory: {torch.cuda.get_device_properties(device_id).total_memory / 1e9:.1f} GB")
         # Enable cuDNN benchmarking for faster training
         torch.backends.cudnn.benchmark = True
     elif torch.backends.mps.is_available():
@@ -28,6 +33,13 @@ def get_device():
         device = torch.device("cpu")
         print("Using CPU")
     return device
+
+
+def get_num_gpus() -> int:
+    """Get the number of available CUDA GPUs."""
+    if torch.cuda.is_available():
+        return torch.cuda.device_count()
+    return 0
 
 
 def set_seed(seed: int):

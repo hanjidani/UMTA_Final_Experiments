@@ -9,6 +9,8 @@ import json
 import time
 from datetime import datetime
 import argparse
+import multiprocessing as mp
+from functools import partial
 
 import torch
 import clip
@@ -19,7 +21,7 @@ from tqdm import tqdm
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from shared.utils import get_device, set_seed, clear_memory, count_parameters, ensure_dir, load_config, save_config
+from shared.utils import get_device, get_num_gpus, set_seed, clear_memory, count_parameters, ensure_dir, load_config, save_config
 from shared.models import create_mapper, create_loss
 from shared.data import (
     load_cifar100, load_imagenet100,
@@ -30,9 +32,10 @@ from shared.evaluation import compute_attack_metrics, compute_target_centroid
 
 
 class Experiment1:
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, device_id: int = 0):
         self.config = load_config(config_path)
-        self.device = get_device()
+        self.device_id = device_id
+        self.device = get_device(device_id)
         set_seed(self.config['experiment']['seed'])
         
         # Results directory
@@ -54,7 +57,7 @@ class Experiment1:
             if hasattr(torch, 'compile') and self.device.type == 'cuda':
                 # Check CUDA capability (need >= 7.0 for Triton)
                 if torch.cuda.is_available():
-                    capability = torch.cuda.get_device_capability(0)
+                    capability = torch.cuda.get_device_capability(self.device_id)
                     if capability[0] >= 7:  # Compute capability >= 7.0
                         print("    Compiling CLIP model for faster inference...")
                         self.clip_model.encode_image = torch.compile(self.clip_model.encode_image, mode='reduce-overhead')
@@ -358,6 +361,65 @@ PARALLEL_PAIRS = [
 ]
 
 
+def run_single_architecture(config_path: str, arch_idx: int, device_id: int, results_dir: Path):
+    """
+    Run a single architecture on a specific GPU (for multi-GPU parallel execution).
+    
+    Args:
+        config_path: Path to config.yaml
+        arch_idx: Index of architecture to run
+        device_id: GPU device ID (0, 1, ...)
+        results_dir: Shared results directory
+    """
+    config = load_config(config_path)
+    
+    if arch_idx >= len(config['architectures']):
+        return None
+    
+    arch_cfg = config['architectures'][arch_idx]
+    arch_name = arch_cfg['name']
+    
+    print(f"\n[GPU {device_id}] Starting architecture: {arch_name}")
+    
+    # Create experiment instance on specific GPU
+    exp = Experiment1(config_path, device_id=device_id)
+    exp.results_dir = results_dir  # Use shared results directory
+    
+    # Run only this architecture
+    arch_results = []
+    for pair_idx, (src_cls, tgt_cls) in enumerate(exp.pairs):
+        print(f"\n[GPU {device_id}] Pair {pair_idx+1}/{len(exp.pairs)}: "
+              f"{exp.class_names[src_cls]} → {exp.class_names[tgt_cls]}")
+        
+        mapper = create_mapper(arch_name, **arch_cfg).to(exp.device)
+        n_params = count_parameters(mapper)
+        
+        start = time.time()
+        losses = exp.train_mapper(mapper, src_cls, tgt_cls)
+        train_time = time.time() - start
+        
+        metrics = exp.evaluate_mapper(mapper, src_cls, tgt_cls)
+        
+        arch_results.append({
+            'architecture': arch_name,
+            'pair_idx': pair_idx,
+            'source_class': src_cls,
+            'target_class': tgt_cls,
+            'source_name': exp.class_names[src_cls],
+            'target_name': exp.class_names[tgt_cls],
+            'num_params': n_params,
+            'train_time': train_time,
+            'final_loss': losses[-1],
+            **metrics.to_dict()
+        })
+        
+        del mapper
+        clear_memory(exp.device)
+    
+    print(f"\n[GPU {device_id}] ✅ Completed architecture: {arch_name}")
+    return arch_results
+
+
 def run_parallel_pair(config_path: str, pair_index: int):
     """
     Run Experiment 1 for a single pair (for parallel execution across 10 notebooks).
@@ -394,20 +456,116 @@ def run_parallel_pair(config_path: str, pair_index: int):
     print(f"Results saved to: {exp.results_dir}")
 
 
+def run_multi_gpu(config_path: str):
+    """
+    Run architectures in parallel across multiple GPUs.
+    Splits architectures across available GPUs.
+    """
+    num_gpus = get_num_gpus()
+    if num_gpus < 2:
+        print(f"⚠️  Only {num_gpus} GPU(s) available. Falling back to single-GPU mode.")
+        Experiment1(config_path).run()
+        return
+    
+    config = load_config(config_path)
+    num_architectures = len(config['architectures'])
+    
+    print(f"\n{'='*60}")
+    print(f"MULTI-GPU PARALLEL EXECUTION")
+    print(f"{'='*60}")
+    print(f"GPUs Available: {num_gpus}")
+    print(f"Architectures: {num_architectures}")
+    print(f"Distribution: {[f'GPU {i}: {num_architectures // num_gpus + (1 if i < num_architectures % num_gpus else 0)} archs' for i in range(num_gpus)]}")
+    print(f"{'='*60}\n")
+    
+    # Create shared results directory
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_dir = Path(__file__).parent / 'results' / f"multi_gpu_{timestamp}"
+    ensure_dir(results_dir)
+    save_config(config, str(results_dir / 'config.json'))
+    
+    # Split architectures across GPUs
+    arch_per_gpu = num_architectures // num_gpus
+    remainder = num_architectures % num_gpus
+    
+    tasks = []
+    arch_idx = 0
+    for gpu_id in range(num_gpus):
+        num_archs_for_gpu = arch_per_gpu + (1 if gpu_id < remainder else 0)
+        for _ in range(num_archs_for_gpu):
+            tasks.append((arch_idx, gpu_id))
+            arch_idx += 1
+    
+    # Run architectures in parallel using multiprocessing
+    print(f"Starting {len(tasks)} tasks across {num_gpus} GPUs...\n")
+    
+    def run_task(arch_idx, gpu_id):
+        return run_single_architecture(config_path, arch_idx, gpu_id, results_dir)
+    
+    with mp.Pool(processes=num_gpus) as pool:
+        results = pool.starmap(run_task, tasks)
+    
+    # Collect all results
+    all_results = []
+    for arch_results in results:
+        if arch_results:
+            all_results.extend(arch_results)
+    
+    # Save combined results
+    df = pd.DataFrame(all_results)
+    df.to_csv(results_dir / 'results.csv', index=False)
+    
+    # Generate summary
+    summary = df.groupby('architecture').agg({
+        'asr_05': ['mean', 'std'],
+        'asr_06': ['mean', 'std'],
+        'cos_sim_mean': ['mean', 'std'],
+        'train_time': 'mean',
+        'num_params': 'first'
+    }).round(4)
+    
+    print("\n" + "="*60)
+    print("MULTI-GPU SUMMARY")
+    print("="*60)
+    print(summary)
+    
+    mean_asr = df.groupby('architecture')['asr_05'].mean()
+    best_arch = mean_asr.idxmax()
+    best_config = next(a for a in config['architectures'] if a['name'] == best_arch)
+    
+    print(f"\n🏆 BEST: {best_arch} (ASR@0.5: {mean_asr[best_arch]:.2%})")
+    
+    with open(results_dir / 'best_architecture.json', 'w') as f:
+        json.dump({
+            'best_architecture': best_arch,
+            'config': best_config,
+            'asr_05': float(mean_asr[best_arch]),
+            'all_results': mean_asr.to_dict()
+        }, f, indent=2)
+    
+    summary.to_csv(results_dir / 'summary.csv')
+    print(f"\nResults saved to: {results_dir}")
+
+
 def main():
     parser = argparse.ArgumentParser(description='UMTA Experiment 1: Architecture Search')
     parser.add_argument('--config', default='config.yaml', help='Path to config file')
     parser.add_argument('--pair_index', type=int, default=None, 
                        help='Pair index for parallel execution (0-9). If None, runs normal mode.')
+    parser.add_argument('--multi_gpu', action='store_true',
+                       help='Use multiple GPUs to train architectures in parallel')
     args = parser.parse_args()
     
     config_path = Path(__file__).parent / args.config
     
     if args.pair_index is not None:
-        # Parallel execution mode
+        # Parallel execution mode (single pair across notebooks)
         run_parallel_pair(str(config_path), args.pair_index)
+    elif args.multi_gpu:
+        # Multi-GPU parallel execution (architectures across GPUs)
+        run_multi_gpu(str(config_path))
     else:
-        # Normal execution mode (all pairs from config)
+        # Normal execution mode (all pairs from config, single GPU)
         Experiment1(str(config_path)).run()
 
 
