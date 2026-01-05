@@ -15,6 +15,14 @@ class MMDLoss(nn.Module):
         super().__init__()
         self.bandwidths = bandwidths
     
+    def rbf_kernel(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """Compute RBF kernel using torch.cdist for efficiency."""
+        distances = torch.cdist(x, y) ** 2  # [B_x, B_y]
+        kernel_val = torch.zeros_like(distances)
+        for sigma in self.bandwidths:
+            kernel_val += torch.exp(-distances / (2 * sigma**2))
+        return kernel_val / len(self.bandwidths)
+    
     def forward(self, source: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """
         Compute MMD between source and target embeddings.
@@ -22,25 +30,14 @@ class MMDLoss(nn.Module):
             source: [B, D] adversarial embeddings
             target: [B, D] target class embeddings
         """
-        # Squared distances
-        xx = (source * source).sum(-1, keepdim=True)
-        yy = (target * target).sum(-1, keepdim=True)
-        
-        d_ss = xx + xx.t() - 2 * source @ source.t()
-        d_tt = yy + yy.t() - 2 * target @ target.t()
-        d_st = xx + yy.t() - 2 * source @ target.t()
-        
-        # Multi-scale RBF kernel
-        k_ss = sum(torch.exp(-d_ss / (2 * s**2)) for s in self.bandwidths) / len(self.bandwidths)
-        k_tt = sum(torch.exp(-d_tt / (2 * s**2)) for s in self.bandwidths) / len(self.bandwidths)
-        k_st = sum(torch.exp(-d_st / (2 * s**2)) for s in self.bandwidths) / len(self.bandwidths)
-        
         B = source.size(0)
-        mmd = (k_ss.sum() - k_ss.trace()) / (B * (B - 1)) \
-            + (k_tt.sum() - k_tt.trace()) / (B * (B - 1)) \
-            - 2 * k_st.mean()
+        xx = self.rbf_kernel(source, source)
+        yy = self.rbf_kernel(target, target)
+        xy = self.rbf_kernel(source, target)
         
-        return mmd
+        return (xx.sum() - xx.trace()) / (B * (B - 1)) \
+            + (yy.sum() - yy.trace()) / (B * (B - 1)) \
+            - 2 * xy.mean()
 
 
 class CosineLoss(nn.Module):
@@ -48,7 +45,8 @@ class CosineLoss(nn.Module):
     
     def forward(self, source: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         target_centroid = target.mean(dim=0, keepdim=True)
-        return -F.cosine_similarity(source, target_centroid, dim=-1).mean()
+        # Return 1 - cosine_similarity for minimization (as per prompt specification)
+        return 1 - F.cosine_similarity(source, target_centroid, dim=-1).mean()
 
 
 class SinkhornLoss(nn.Module):

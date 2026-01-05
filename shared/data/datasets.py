@@ -169,6 +169,14 @@ def get_class_indices(dataset, class_id: int) -> List[int]:
     return indices
 
 
+def get_class_loader(dataset, class_index: int, batch_size: int, max_samples: Optional[int] = 500) -> DataLoader:
+    """
+    Create DataLoader for a specific class (simplified interface for parallel execution).
+    Alias/alternative to create_class_dataloader with simpler signature.
+    """
+    return create_class_dataloader(dataset, class_index, batch_size, max_samples=max_samples, shuffle=True)
+
+
 def create_class_dataloader(
     dataset, class_id: int, batch_size: int, 
     max_samples: Optional[int] = None, shuffle: bool = True
