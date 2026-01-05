@@ -30,7 +30,7 @@ loss:
   bandwidths: [0.5, 1.0, 2.0]
 
 training:
-  epochs: 50
+  epochs: 1  # Temporarily set to 1 for testing
   batch_size: 128  # Optimized for GPU (T4: 15.8GB)
   learning_rate: 0.0001
 
