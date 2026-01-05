@@ -120,8 +120,8 @@ class Experiment1:
                 tgt_imgs = tgt_imgs.to(self.device)
                 tgt_emb = self.clip_model.encode_image(tgt_imgs)
                 tgt_emb = tgt_emb / tgt_emb.norm(dim=-1, keepdim=True)
-                # Detach to ensure no gradient computation
-                tgt_embeddings_list.append(tgt_emb.detach())
+                # Ensure float32 and detach to ensure no gradient computation
+                tgt_embeddings_list.append(tgt_emb.float().detach())
         
         loss_fn = create_loss(cfg['loss']['type'], bandwidths=cfg['loss']['bandwidths'])
         optimizer = torch.optim.Adam(mapper.parameters(), lr=cfg['training']['learning_rate'])
@@ -167,8 +167,10 @@ class Experiment1:
                 # The key: adv_imgs has requires_grad=True (from mapper), so gradients will flow
                 adv_emb = self.clip_model.encode_image(adv_imgs)
                 adv_emb = adv_emb / adv_emb.norm(dim=-1, keepdim=True)
+                # Ensure float32 for loss computation (loss functions handle this, but ensure here too)
+                adv_emb = adv_emb.float()
+                tgt_emb = tgt_emb.float()
                 
-                # Keep on device (MPS) - no need for .float() conversion
                 loss = loss_fn(adv_emb, tgt_emb)
                 
                 optimizer.zero_grad()
