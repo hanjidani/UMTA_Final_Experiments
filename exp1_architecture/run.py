@@ -361,6 +361,13 @@ PARALLEL_PAIRS = [
 ]
 
 
+def _run_single_architecture_wrapper(arch_idx: int, device_id: int, config_path: str, results_dir: Path, selected_pairs: list = None):
+    """
+    Wrapper function for multiprocessing (must be at module level for pickling).
+    """
+    return run_single_architecture(config_path, arch_idx, device_id, results_dir, selected_pairs)
+
+
 def run_single_architecture(config_path: str, arch_idx: int, device_id: int, results_dir: Path, selected_pairs: list = None):
     """
     Run a single architecture on a specific GPU (for multi-GPU parallel execution).
