@@ -411,8 +411,20 @@ def run_single_architecture(config_path: str, arch_idx: int, device_id: int, res
     
     print(f"\n[GPU {device_id}] Starting architecture: {arch_name}")
     
-    # Keep original batch size since we're running only 1 architecture per GPU now
-    # (No need to reduce batch size anymore)
+    # Reduce batch size for multi-GPU mode to prevent OOM
+    # Even with 1 arch per GPU, larger architectures (UNet, ResUNet, AttentionUNet) need smaller batches
+    original_batch_size = config['training']['batch_size']
+    
+    # Architecture-specific batch size reduction
+    if arch_name in ['UNet', 'ResUNet', 'AttentionUNet']:
+        # Large architectures: reduce to 64
+        config['training']['batch_size'] = 64
+    else:
+        # SimpleCNN: can use larger batch, but still reduce for safety
+        config['training']['batch_size'] = max(64, original_batch_size // 2)
+    
+    if config['training']['batch_size'] != original_batch_size:
+        print(f"[GPU {device_id}] Using batch_size={config['training']['batch_size']} (reduced from {original_batch_size} for {arch_name})")
     
     # Temporarily save modified config for Experiment1 to load
     temp_config_path = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
