@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 import json
 import time
+import os
+import tempfile
 from datetime import datetime
 import argparse
 import multiprocessing as mp
@@ -15,6 +17,7 @@ from functools import partial
 import torch
 import clip
 import pandas as pd
+import yaml
 from tqdm import tqdm
 
 # Add project root to path
@@ -408,15 +411,30 @@ def run_single_architecture(config_path: str, arch_idx: int, device_id: int, res
     
     print(f"\n[GPU {device_id}] Starting architecture: {arch_name}")
     
+    # Reduce batch size for multi-GPU mode (multiple processes per GPU share memory)
+    # Original batch_size is for single-GPU mode, halve it for multi-GPU
+    original_batch_size = config['training']['batch_size']
+    config['training']['batch_size'] = max(32, original_batch_size // 2)  # At least 32, but half of original
+    print(f"[GPU {device_id}] Using batch_size={config['training']['batch_size']} (reduced from {original_batch_size} for multi-GPU)")
+    
+    # Temporarily save modified config for Experiment1 to load
+    temp_config_path = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+    yaml.dump(config, temp_config_path)
+    temp_config_path.close()
+    temp_config_path_str = temp_config_path.name
+    
     # Create experiment instance on specific GPU
     # Pass pre_selected_pairs to avoid pair selection, and use_multiprocessing=True to disable DataLoader workers
     exp = Experiment1(
-        config_path, 
+        temp_config_path_str, 
         device_id=device_id, 
         pre_selected_pairs=selected_pairs,
         use_multiprocessing=True  # Disable DataLoader workers in multiprocessing context
     )
     exp.results_dir = results_dir  # Use shared results directory
+    
+    # Clear memory after CLIP loading
+    torch.cuda.empty_cache()
     
     # Run only this architecture
     arch_results = []
@@ -448,6 +466,14 @@ def run_single_architecture(config_path: str, arch_idx: int, device_id: int, res
         
         del mapper
         clear_memory(exp.device)
+        torch.cuda.empty_cache()  # Explicitly clear CUDA cache
+    
+    # Clean up temp config file
+    import os
+    try:
+        os.unlink(temp_config_path_str)
+    except:
+        pass
     
     print(f"\n[GPU {device_id}] ✅ Completed architecture: {arch_name}")
     return arch_results
