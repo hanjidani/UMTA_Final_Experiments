@@ -21,7 +21,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from shared.utils import get_device, set_seed, clear_memory, count_parameters, ensure_dir, load_config, save_config
 from shared.models import create_mapper, create_loss
-from shared.data import load_cifar100, create_class_dataloader, select_diverse_pairs, get_cifar100_class_names
+from shared.data import (
+    load_cifar100, load_imagenet100,
+    create_class_dataloader, select_diverse_pairs,
+    get_cifar100_class_names, get_imagenet100_class_names
+)
 from shared.evaluation import compute_attack_metrics, compute_target_centroid
 
 
@@ -44,18 +48,32 @@ class Experiment1:
         for p in self.clip_model.parameters():
             p.requires_grad = False
         
-        # Compile CLIP for faster inference (if supported)
-        # Note: torch.compile may not work on MPS, but worth trying
+        # Compile CLIP for faster inference on GPU (CUDA)
         try:
-            if hasattr(torch, 'compile') and self.device.type != 'mps':
+            if hasattr(torch, 'compile') and self.device.type == 'cuda':
                 print("    Compiling CLIP model for faster inference...")
                 self.clip_model.encode_image = torch.compile(self.clip_model.encode_image, mode='reduce-overhead')
         except Exception as e:
             print(f"    Note: Could not compile CLIP ({e}), using standard inference")
         
-        # Load data
-        print("Loading dataset...")
-        self.train_data, self.test_data = load_cifar100(self.preprocess, str(PROJECT_ROOT / 'data'))
+        # Load data based on config
+        dataset_name = self.config['data']['dataset'].lower()
+        print(f"Loading dataset: {dataset_name}...")
+        
+        data_dir = str(PROJECT_ROOT / 'data')
+        
+        if dataset_name == 'imagenet100':
+            self.train_data, self.test_data = load_imagenet100(self.preprocess, data_dir)
+            # Get class names from dataset
+            self.class_names = get_imagenet100_class_names(self.train_data)
+        elif dataset_name == 'cifar100':
+            self.train_data, self.test_data = load_cifar100(self.preprocess, data_dir)
+            self.class_names = get_cifar100_class_names()
+        else:
+            raise ValueError(f"Unknown dataset: {dataset_name}. Supported: 'cifar100', 'imagenet100'")
+        
+        print(f"Loaded {len(self.train_data)} training samples, {len(self.test_data)} test samples")
+        print(f"Number of classes: {len(self.class_names)}")
         
         # Select pairs
         print("Selecting pairs...")
@@ -66,7 +84,6 @@ class Experiment1:
             self.device
         )
         
-        self.class_names = get_cifar100_class_names()
         self.results = []
     
     def train_mapper(self, mapper, source_class, target_class):
@@ -311,13 +328,73 @@ class Experiment1:
         print(f"\nResults saved to: {self.results_dir}")
 
 
+# Hardcoded pairs for parallel execution (10 notebooks, one per pair)
+# Format: (Source Index, Target Index)
+PARALLEL_PAIRS = [
+    (1, 2),     # 0: Fish -> Shark (Easy)
+    (12, 14),   # 1: Finch -> Bunting (Easy)
+    (35, 31),   # 2: Plant -> Frog (Med-Easy)
+    (56, 58),   # 3: Dog -> Cat (Med-Easy)
+    (89, 81),   # 4: Truck -> Car (Medium)
+    (44, 39),   # 5: Snake -> Lizard (Medium)
+    (10, 95),   # 6: Bird -> Object (Med-Hard)
+    (23, 67),   # 7: Bird -> Artifact (Med-Hard)
+    (0, 99),    # 8: Fish -> Paper (Hard)
+    (5, 92)     # 9: Fish -> Traffic Light (Hard)
+]
+
+
+def run_parallel_pair(config_path: str, pair_index: int):
+    """
+    Run Experiment 1 for a single pair (for parallel execution across 10 notebooks).
+    
+    Args:
+        config_path: Path to config.yaml
+        pair_index: Index in PARALLEL_PAIRS (0-9)
+    """
+    if pair_index < 0 or pair_index >= len(PARALLEL_PAIRS):
+        raise ValueError(f"Pair index {pair_index} out of range (0-{len(PARALLEL_PAIRS)-1})")
+    
+    src_cls, tgt_cls = PARALLEL_PAIRS[pair_index]
+    print(f"\n{'='*60}")
+    print(f"PARALLEL EXECUTION MODE: Pair Index {pair_index}")
+    print(f"Source Class: {src_cls} -> Target Class: {tgt_cls}")
+    print(f"{'='*60}\n")
+    
+    config = load_config(config_path)
+    
+    # Override pairs in config with single pair
+    original_pairs = config.get('evaluation', {}).get('num_pairs', 3)
+    config['evaluation'] = {'num_pairs': 1, 'pair_index': pair_index}
+    
+    # Create experiment instance
+    exp = Experiment1(config_path)
+    
+    # Override pair selection with hardcoded pair
+    exp.pairs = [(src_cls, tgt_cls)]
+    
+    # Run experiment
+    exp.run()
+    
+    print(f"\n✅ Completed pair {pair_index}: {src_cls} -> {tgt_cls}")
+    print(f"Results saved to: {exp.results_dir}")
+
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', default='config.yaml')
+    parser = argparse.ArgumentParser(description='UMTA Experiment 1: Architecture Search')
+    parser.add_argument('--config', default='config.yaml', help='Path to config file')
+    parser.add_argument('--pair_index', type=int, default=None, 
+                       help='Pair index for parallel execution (0-9). If None, runs normal mode.')
     args = parser.parse_args()
     
     config_path = Path(__file__).parent / args.config
-    Experiment1(str(config_path)).run()
+    
+    if args.pair_index is not None:
+        # Parallel execution mode
+        run_parallel_pair(str(config_path), args.pair_index)
+    else:
+        # Normal execution mode (all pairs from config)
+        Experiment1(str(config_path)).run()
 
 
 if __name__ == '__main__':

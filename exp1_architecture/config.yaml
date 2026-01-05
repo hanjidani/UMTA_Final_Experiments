@@ -3,10 +3,10 @@ experiment:
   seed: 42
 
 data:
-  dataset: "cifar100"
-  num_classes: 20
-  train_samples_per_class: 100
-  test_samples_per_class: 20
+  dataset: "imagenet100"  # ImageNet-100 dataset
+  num_classes: 50  # Use first 50 classes for pair selection (faster, can increase to 100)
+  train_samples_per_class: 500  # Use all available training samples per class
+  test_samples_per_class: 50  # Test samples per class
 
 attack:
   epsilon: 0.0314  # 8/255
@@ -31,7 +31,7 @@ loss:
 
 training:
   epochs: 15
-  batch_size: 64  # Increased for better MPS utilization and faster training
+  batch_size: 32  # Optimized for GPU (can increase if memory allows)
   learning_rate: 0.0001
 
 evaluation:

@@ -8,6 +8,7 @@ import torchvision
 import torchvision.transforms as transforms
 import numpy as np
 from typing import Tuple, List, Optional
+from pathlib import Path
 import torch.nn.functional as F
 
 
@@ -60,13 +61,111 @@ def load_cifar100(clip_preprocess, data_dir: str = './data') -> Tuple[Dataset, D
     return CLIPDataset(train_base, clip_preprocess), CLIPDataset(test_base, clip_preprocess)
 
 
+def load_imagenet100(clip_preprocess, data_dir: str = './data') -> Tuple[Dataset, Dataset]:
+    """
+    Load ImageNet-100 with CLIP preprocessing.
+    
+    ImageNet-100 is a subset of ImageNet with 100 classes.
+    Expected structure:
+        data/imagenet-100/
+            train/
+                class1/
+                class2/
+                ...
+            val/
+                class1/
+                class2/
+                ...
+    
+    Robust to Kaggle path nesting - checks multiple possible locations.
+    """
+    import os
+    from torchvision.datasets import ImageFolder
+    
+    # Try multiple possible paths (for Kaggle compatibility)
+    possible_roots = [
+        Path(data_dir) / 'imagenet-100',
+        Path(data_dir) / 'ImageNet100',
+        Path(data_dir),
+        Path('/kaggle/input/imagenet-100') / 'imagenet-100',
+        Path('/kaggle/input/imagenet-100'),
+    ]
+    
+    real_root = None
+    for p in possible_roots:
+        train_path = p / 'train'
+        if train_path.exists():
+            real_root = p
+            break
+    
+    if real_root is None:
+        # Fallback to original behavior
+        real_root = Path(data_dir) / 'imagenet-100'
+        train_dir = real_root / 'train'
+        val_dir = real_root / 'val'
+    else:
+        train_dir = real_root / 'train'
+        val_dir = real_root / 'val'
+    
+    print(f"Dataset found at: {real_root}")
+    
+    # Base transform: resize to 224x224 (ImageNet images are already larger)
+    base_transform = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+    ])
+    
+    train_base = ImageFolder(root=str(train_dir), transform=base_transform)
+    test_base = ImageFolder(root=str(val_dir), transform=base_transform)
+    
+    return CLIPDataset(train_base, clip_preprocess), CLIPDataset(test_base, clip_preprocess)
+
+
+def get_imagenet100_class_names(dataset) -> List[str]:
+    """Get class names from ImageNet-100 dataset."""
+    base_dataset = dataset.base_dataset if hasattr(dataset, 'base_dataset') else dataset
+    
+    if hasattr(base_dataset, 'classes'):
+        return base_dataset.classes
+    elif hasattr(base_dataset, 'class_to_idx'):
+        # ImageFolder stores classes in class_to_idx
+        return sorted(base_dataset.class_to_idx.keys(), key=lambda x: base_dataset.class_to_idx[x])
+    else:
+        # Fallback: generate from class indices
+        if hasattr(base_dataset, 'targets'):
+            num_classes = len(set(base_dataset.targets))
+        else:
+            num_classes = len(set([dataset[i][1] for i in range(min(100, len(dataset)))]))
+        return [f"class_{i}" for i in range(num_classes)]
+
+
 def get_class_indices(dataset, class_id: int) -> List[int]:
     """Get all indices for a specific class."""
     indices = []
-    for idx in range(len(dataset)):
-        _, label = dataset.base_dataset[idx]
-        if label == class_id:
-            indices.append(idx)
+    
+    # Handle different dataset types
+    base_dataset = dataset.base_dataset if hasattr(dataset, 'base_dataset') else dataset
+    
+    # Check if dataset has targets attribute (ImageFolder, CIFAR)
+    if hasattr(base_dataset, 'targets'):
+        targets = base_dataset.targets
+        if isinstance(targets, list):
+            indices = [i for i, t in enumerate(targets) if t == class_id]
+        elif isinstance(targets, torch.Tensor):
+            indices = (targets == class_id).nonzero(as_tuple=True)[0].tolist()
+        else:
+            # Fallback: iterate through dataset
+            for idx in range(len(dataset)):
+                _, label = dataset.base_dataset[idx]
+                if label == class_id:
+                    indices.append(idx)
+    else:
+        # Fallback: iterate through dataset
+        for idx in range(len(dataset)):
+            _, label = dataset.base_dataset[idx]
+            if label == class_id:
+                indices.append(idx)
+    
     return indices
 
 
@@ -82,12 +181,16 @@ def create_class_dataloader(
     import platform
     import torch
     
-    if platform.system() == "Darwin":  # macOS (MPS)
+    # Optimize for GPU (CUDA) - Kaggle/Cloud ready
+    if torch.cuda.is_available():
+        num_workers = 4  # Multiple workers for GPU
+        pin_memory = True  # Faster GPU data transfer
+    elif platform.system() == "Darwin":  # macOS (MPS)
         num_workers = 2  # Conservative for macOS
         pin_memory = False  # MPS doesn't support pin_memory
-    else:  # Linux (CUDA on Kaggle/GPU servers)
-        num_workers = 4  # More workers on Linux
-        pin_memory = torch.cuda.is_available()  # Use pin_memory for CUDA (faster data transfer)
+    else:  # CPU fallback
+        num_workers = 2
+        pin_memory = False
     
     return DataLoader(
         Subset(dataset, indices), 
@@ -145,10 +248,23 @@ def select_diverse_pairs(
         if len(selected) >= num_pairs:
             break
     
-    class_names = get_cifar100_class_names()
+    # Get class names (works for both CIFAR-100 and ImageNet-100)
+    try:
+        # Try to get from dataset
+        if hasattr(dataset.base_dataset, 'classes'):
+            class_names = dataset.base_dataset.classes
+        else:
+            # Fallback to CIFAR-100 class names
+            class_names = get_cifar100_class_names()
+    except:
+        class_names = get_cifar100_class_names()
+    
     print(f"Selected {len(selected)} pairs:")
     for src, tgt in selected:
-        print(f"  {class_names[src]} → {class_names[tgt]}")
+        if src < len(class_names) and tgt < len(class_names):
+            print(f"  {class_names[src]} → {class_names[tgt]}")
+        else:
+            print(f"  Class {src} → Class {tgt}")
     
     return selected
 

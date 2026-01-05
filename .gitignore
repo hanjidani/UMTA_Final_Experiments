@@ -39,7 +39,8 @@ logs/
 
 # Jupyter
 .ipynb_checkpoints/
-*.ipynb
+# Keep notebooks folder
+!notebooks/*.ipynb
 
 # Logs
 *.log
