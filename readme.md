@@ -440,6 +440,29 @@ Help me interpret these and decide if I'm ready for publication.
 
 ---
 
+## Kaggle Setup
+
+### Adding ImageNet-100 Dataset to Kaggle Notebooks
+
+If you're running experiments on Kaggle and need to add the ImageNet-100 dataset:
+
+**Option 1: Search in Kaggle**
+- In your Kaggle notebook, click the "+ Add data" button
+- Search for "ImageNet-100" or "imagenet100"
+- Select the dataset and add it to your notebook
+
+**Option 2: Use the Direct Link**
+If search fails, you can add it via URL in your browser, then refresh the notebook page:
+
+1. Open a new tab and go to: https://www.kaggle.com/datasets/ambityga/imagenet100
+2. Click the **+ Add to Notebook** button (top right)
+3. Select your notebook from the list
+4. Refresh your notebook page to see the dataset added
+
+After adding the dataset, update the dataset path in your configuration files to point to `/kaggle/input/imagenet100/` (or the appropriate path shown in Kaggle).
+
+---
+
 ## Summary of What I Know
 
 | Aspect | Status |
